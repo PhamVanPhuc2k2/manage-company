@@ -1,0 +1,30 @@
+# Go
+/backend/tmp/
+*.exe
+
+# Node
+node_modules/
+.next/
+out/
+
+.pnpm-store/
+tsconfig.tsbuildinfo
+
+.env
+
+.env.local
+*.local
+
+backups/
+*.dump
+
+.vscode/
+.idea/
+
+# Chứng chỉ TLS
+docker/nginx/certs/
+docker/nginx/acme/
+
+# Triển khai tự động
+/deploy-logs/
+/.cd-deploy.lock
