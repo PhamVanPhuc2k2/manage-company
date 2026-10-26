@@ -129,3 +129,4 @@ func Handler() http.Handler {
 		ErrorHandling: promhttp.ContinueOnError,
 	})
 }
+
