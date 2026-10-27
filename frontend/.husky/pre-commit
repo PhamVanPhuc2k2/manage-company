@@ -1,0 +1,66 @@
+#!/bin/sh
+# Kiểm tra trước mỗi commit — bắt lỗi định dạng / lint trong vài giây thay vì
+# đẩy lên rồi chờ CI báo đỏ sau nhiều phút.
+#
+# Bật một lần cho mỗi bản clone:  make hooks
+#
+# Chạy trên các tệp ĐANG STAGE, không phải cả repo: commit vài dòng thì chỉ
+# kiểm vài dòng đó, và code cũ chưa định dạng không chặn một commit mới.
+# Bỏ qua lúc thật sự gấp: git commit --no-verify (CI vẫn chặn ở sau).
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+# ---------------------------------------------------------------- frontend
+FE_FILES=$(git diff --cached --name-only --diff-filter=ACMR -- 'frontend/*' \
+  | grep -E '\.(ts|tsx|js|mjs|css|json|md)$' | sed 's|^frontend/||')
+
+if [ -n "$FE_FILES" ]; then
+  ESLINT_FILES=$(printf '%s\n' "$FE_FILES" | grep -E '\.(ts|tsx|js|mjs)$')
+
+  # node_modules nằm TRONG container (volume riêng), không có ở máy — nên
+  # chạy công cụ trong container frontend đang chạy. Máy nào có sẵn
+  # node_modules (cài tay) thì chạy thẳng.
+  if [ -x frontend/node_modules/.bin/prettier ]; then
+    run_fe() { (cd frontend && "$@"); }
+  elif docker compose ps --status running --services 2>/dev/null | grep -qx frontend; then
+    run_fe() { docker compose exec -T frontend "$@"; }
+  else
+    echo "⚠ Container frontend chưa chạy — bỏ qua kiểm tra frontend (make up để bật)."
+    run_fe() { return 0; }
+  fi
+
+  # shellcheck disable=SC2086 # tách theo dòng là cố ý: tên tệp không có dấu cách
+  if ! run_fe pnpm exec prettier --check $FE_FILES; then
+    echo
+    echo "✗ Tệp frontend chưa đúng định dạng. Sửa bằng:"
+    echo "  docker compose exec -T frontend pnpm exec prettier --write $(echo $FE_FILES)"
+    echo "  rồi git add lại."
+    exit 1
+  fi
+  if [ -n "$ESLINT_FILES" ]; then
+    # shellcheck disable=SC2086
+    run_fe pnpm exec eslint --max-warnings=0 $ESLINT_FILES || {
+      echo "✗ eslint báo lỗi ở trên."
+      exit 1
+    }
+  fi
+fi
+
+# ----------------------------------------------------------------- backend
+# Tệp Go stage vào phải qua gofmt. CI cũng chặn, nhưng bắt ở đây rẻ hơn một
+# vòng đẩy lên rồi chờ CI báo đỏ.
+GO_FILES=$(git diff --cached --name-only --diff-filter=ACMR -- 'backend/*.go' 'backend/**/*.go')
+if [ -n "$GO_FILES" ]; then
+  if command -v gofmt >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    BAD=$(gofmt -l $GO_FILES)
+    if [ -n "$BAD" ]; then
+      echo "✗ Các tệp Go chưa qua gofmt:"
+      echo "$BAD"
+      echo "Chạy: gofmt -w <tệp> rồi stage lại."
+      exit 1
+    fi
+  else
+    echo "⚠ Không có gofmt trên máy, bỏ qua kiểm định dạng Go."
+  fi
+fi
