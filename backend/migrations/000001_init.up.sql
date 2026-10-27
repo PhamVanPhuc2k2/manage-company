@@ -1,0 +1,13 @@
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+CREATE EXTENSION IF NOT EXISTS "unaccent";
+
+CREATE TABLE IF NOT EXISTS system_info(
+    key VARCHAR(100) PRIMARY KEY,
+    value TEXT NOT NULL;
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO system_info (key, value)
+VALUES ('schema_initialized_at', NOW()::TEXT)
+ON CONFLICT (key) DO NOTHING;
