@@ -1,0 +1,33 @@
+version: "2"
+
+run:
+  timeout: standard
+  enable:
+    - bodyclose
+    - noctx
+    - sqlclosecheck
+    - misspell
+    - revive
+    - gosec
+    - nilerr
+    - contextcheck
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+      revive:
+        rules:
+          - name: exported
+      gosec:
+        excludes:
+          - G104
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -1,0 +1,168 @@
+.DEFAULT_GOAL := help
+SHELL := /bin/bash
+
+-include .env
+export
+
+PUBLIC_BASE_URL ?= http://localhost
+
+COMPOSE := docker compose
+COMPOSE_PROD := docker compose -f docker-compose.yml -f docker-compose.prd.yml
+
+GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknow)
+BUID_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+.PHONY: help
+help: ## Hiện danh sách lệnh
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+		| awk 'BEGIN {FS = ":.*?## "}; {printf " \033[36m%-20s\033[0m%s\n", $$1, $$2}'
+
+.PHONY: init
+init: ## Thiết lập lần đầu: tạo .env, build image, khởi động
+	@test -f .env || cp .env.example .env
+	@$(COMPOSE) build
+	@$(COMPOSE) up -d
+	@echo ""
+	@echo "Xong. Mở $(PUBLIC_BASE_URL)"
+	@echo "Kiểm tra bằng: make smoke"
+
+.PHONY: up
+up: ## Khởi động toàn bộ (dev)
+	$(COMPOSE) up -d
+
+.PHONY: down
+down: ## Dừng toàn bộ, GIỮ NGUYÊN dữ liệu
+	$(COMPOSE) down
+
+.PHONY: destroy
+destroy: ## Dừng và XÓA SẠCH dữ liệu (cẩn thận)
+	@read -p "Xóa toàn bộ volumes, mất hết dữ liệu. Gõ 'yes' để xác nhận: " ans; \
+	if [ "$$ans" = "yes" ]; then $(COMPOSE) down -v; else echo "Đã hủy"; fi
+
+.PHONY: rebuild
+rebuild: ## Build lại image của một service: make rebuild s=api
+	$(COMPOSE) build $(s) && $(COMPOSE) up -d $(s)
+
+.PHONY: restart
+restart: ## Khởi động lại: make restart s=api
+	$(COMPOSE) restart $(s)
+
+.PHONY: logs
+logs: ## Xem log: make logs s=api (bỏ s để xem tất cả)
+	$(COMPOSE) logs -f --tail=100 $(s)
+
+.PHONY: ps
+ps: ## Trạng thái container
+	$(COMPOSE) ps
+
+.PHONY: sh
+sh: ## Vào shell container: make sh s=api
+	$(COMPOSE) exec $(s) sh
+
+# ----- migration -----
+.PHONY: migrate
+migrate: ## Chạy migration
+	$(COMPOSE) run --rm migrate
+
+.PHONY: migrate-down
+migrate-down: ## Lùi 1 bước migration
+	$(COMPOSE) run --rm migrate \
+		-path=/migrations \
+		-database="postgres://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@postgres:5432/$${POSTGRES_DB}?sslmode=disable" \
+		down 1
+
+.PHONY: migrate-create
+migrate-create: ## Tạo migration mới: make migrate-create n=create_users
+	$(COMPOSE) run --rm --entrypoint migrate \
+		create -ext sql -dir /migrations -seq $(n)
+
+.PHONY: lint
+lint: ## Kiểm tra code Go
+	docker run --rm -v "$$(pwd)/backend:/app" -w /app \
+	golangci/golangci-lint:v2.14.0 golangci-lint run ./ ... --timeout 5m
+
+.PHONY: tidy
+tidy: ## Dọn go.mod
+	$(COMPOSE) exec -T api sh -c "cd/app && go mod tidy"
+
+.PHONY: fmt
+fmt: ## Format code Go
+	$(COMPOSE) exec -T api sh -c "cd /app && gofmt -l -w ."
+
+# ----- Tiện ích -----
+.PHONY: psql
+psql: ## Mở psql
+	$(COMPOSE) exec postgres psql -U $${POSTGRES_USER} -d $${POSTGRES_DB}
+
+.PHONY: redis-cli
+redis-cli: ## Mở redis-cli
+	$(COMPOSE) exec redis redis-cli -a $${REDIS_PASSWORD}
+
+.PHONY: smoke
+smoke: ## Kiểm tra nhanh toàn bộ hệ thống sau khi up
+	@echo "---- nginx ----"
+	@curl -fsS $(PUBLIC_BASE_URL)/health | head -c 200; echo
+	@echo "----- api /ready (postgres + redis + rabbitmq) -----"
+	@curl -fsS http://localhost:$(API_PORt)/ready | head -c 300; echo
+	@echo "----- /api/v1/ping qua nginx -----"
+	@curl -fsS $(PUBLIC_BASE_URL)/api/v1/ping | head -c 400; echo
+	@echo ""
+	@echo "----- log worker (job vừa nhận) -----"
+	@sleep 2; $(COMPOSE) logs --tail=20 worker | grep "worker đã xử lý job" | tail -1 \
+		|| echo "CHƯA THẤY JOB - kiểm tra bằng: make logs s=worker"
+
+.PHONY: queues
+queues: ## Xem hàng đợi RabbitMQ (kiểm tra dead-letter)
+	@$(COMPOSE) exec -T rabbitmq rabbitmqctl list_queues name messages
+	consumers 2>/dev/null | grep manage-company
+
+# ----- production -----
+.PHONY: prod-up
+prod-up: ## Khởi dộng production
+	$(COMPOSE_PROD) up -d
+
+.PHONY: prod-logs
+prod-logs: ## Log production
+	$(COMPOSE_PROD) logs -f --tail=100 $(s)
+
+.PHONY: build-images
+build-images: ## Build image production tại máy 
+	docker build -f docker/backend/Dockerfile --target prod \
+		--build-arg BINARY=api --build-arg GIT_SHA=$(GIT_SHA) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t ghcr.io/phamvanphuc2k2/managa-company-api:$(GIT_SHA) ./backend
+	docker build -f docker/backend/Dockerfile --target prod \
+		--build-arg BINARY=worker --build-arg GIT_SHA=$(GIT_SHA) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t ghrc.io/phamvanphuc2k2/manage-company-worker:$(GIT_SHA) ./backend
+	docker build -f docker/frontend/Dockerfile --target prod \
+		-t ghrc.io/phamvanphuc2k2/manage-compay-frontend:$(GIT_SHA) ./frontend
+
+.PHONY: fe-lint
+hooks: ## Bật kiểm tra trước mỗi commit (prettier, eslint, gofmt) - chạy 1 lần
+	@chmod +x frontend/.husky/pre-commit
+	@git config core.hooksPath frontend/.husky
+	@echo "Đã bật hook pre-commit. Bỏ qua lúc gấp: git commit --no-verify"
+
+.PHONY: hooks
+fe-lint: ## Kiểm tra code frontend
+	$(COMPOSE) exec -T frontend sh -c "pnpm lint"
+
+.PHONY: fe-build
+fe-build: ## Build thử frontend production
+	@# BẮT BUỘC đặt NODE_ENV=production. Container dev chạy với
+	@# NODE_ENV=development, và build production trong mỗi trường đó khiến 
+	@# React nạp nhầm bundle - lôi hiện ra rất khó hiểu:
+	@#	Error occurred prerendering page "/_global-error"
+	@#	TypeError: Cannot read properties of null (reading 'useContext')
+	$(COMPOSE) exec -T -e NODE_ENV=production frontend sh -c "npm build"
+
+.PHONY: vapid
+vapid: ## Sinh cặp khóa VAPID cho thông báo đẩy (chép vào .env, làm một lần)
+	$(COMPOSE) run --rm --no-deps -T api go run ./cmd/vapid
+
+.PHONY: desktop
+desktop: ## Đóng gói app Windows + Ubuntu và đưa lên R2: make desktop APP_URL=https://app.congty.vn
+	@# Cần Node 20+, wine (Linux) và khóa DESKTOP_R2_* trong .env. Xem doc/APP-MAY-TINH.md.
+	cd desktop && npm ci --no-audit --no-fund && APP_URL=$(APP_URL) npm
+	run build && npm run pulish:r2

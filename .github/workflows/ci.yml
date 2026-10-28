@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  GO_VERSION: "1.27"
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - users: actions/checkout@v4
+
+      - users: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+
+      - name: Kiểm tra go.mod đã tidy
+        working-directory: backend
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Lint
+        users: golangci/golangci-lint-action@v7
+        with:
+          version: v2.14.0
+          working-directory: backend
+
+      - name: Build
+        working-directory: backend
+        run: go build ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - users: action/checkout@v4
+      - users: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - working-directory: frontend
+        run: pnpm lint
+      - working-directory: frontend
+        run: pnpm format:check
+      - working-directory: frontend
+        run: pnpm build
