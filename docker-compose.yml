@@ -1,0 +1,235 @@
+name: manage-company
+
+x-go-build: &go-build
+  context: ./backend
+  dockerfile: ../docker/backend/Dockerfile
+
+x-go-env: &go-env
+  ENV: ${ENV:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-debug}
+  POSTGRES_DSN: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+  REDIS_ADDR: redis:6379
+  REDIS_PASSWORD: ${REDIS_PASSWORD}
+  RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+  R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+  R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+  R2_SECRET_ACCESS_KEY: ${R2_SECRET_KEY_ID:-}
+  R2_BUCKET: ${R2_BUCKET:-}
+  R2_PUBLIC_URL: ${R2_PUBLIC_URL:-}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URl}
+  JWT_SECRET: ${JWT_SECRET}
+  INTEGRATION_SECRET_KEY: ${INTEGRATION_SECRET_KEY:-}
+  JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+  JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+  AUTH_OTP_ENABLED: ${AUTH_OTP_ENABLED:-true}
+
+  SMTP_HOST: ${SMTP_HOST:-mailhog}
+  SMTP_PORT: ${SMTP_PORT:-1025}
+  SMTP_FROM: ${SMTP_FROM:-no-reply@manage-company.local}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASS: ${SMTP_PASS:-}
+
+  VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+  VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+  VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+  TZ: Asia/Ho_Chi_Minh
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - pgdata:/var/lib/postgres/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks: [backend]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --appendsync everysec
+      --maxmemory 521mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      tes: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [backend]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABIITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABIITMQ_PASSWORD}
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks: [backend]
+
+  migrate:
+    image: migrate/migrate:v4.18.1
+    volumes:
+      - ./backend/migrations:/migrations:ro
+    command:
+      - "-path=migrations"
+      - "-database=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      - "up"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [backend]
+
+  api:
+    build:
+      <<: *go-build
+      target: dev
+      args:
+        BINARY: api
+    restart: unless-stopped
+    environment:
+      <<: *go-env
+      APP_NAME: api
+      HTTP_PORT: 8080
+      CORS_ALLOWED_ORIGINS: ${PUBLIC_BASE_URL},http://localhost:${FRONTEND_PORT:-3000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_complated_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8080/health",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    stop_grace_period: 60s
+    networks: [backend, proxy]
+
+  worker:
+    build:
+      <<: *go-build
+      target: dev
+      args:
+        BINARY: worker
+    restart: unless-stopped
+    environment:
+      <<: *go-env
+      APP_NAME: worker
+      WORKER_CONCURRENCY: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8080/health",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    stop_grace_period: 120s
+    networks: [backend]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../docker/frontend/Dockerfile
+      target: dev
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: ${PUBLIC_BASE_URL}/api/v1
+      NEXT_PUBLIC_WS_URL: ${PUBLIC_WS_URL}/ws
+      DESKTOP_DOWNLOAD_URL: ${DESKTOP_DOWNLOAD_URL:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [proxy]
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./docker/nginx/snippets:/etc/nginx/snippets:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1/health",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [proxy]
+
+networks:
+  backend:
+    driver: bridge
+  proxy:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
+  rabbitmqdata:

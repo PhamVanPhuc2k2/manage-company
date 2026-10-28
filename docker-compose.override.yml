@@ -1,0 +1,65 @@
+services:
+  api:
+    volumes:
+      - ./backend:/app
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+      - api-tmp:/app/tmp
+
+  worker:
+    volumes:
+      - ./backend:/app
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+      - worker-tmp:/app/tmp
+
+  frontend:
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+      - frontend-next:/app/.next
+      - frontend-pnpm-store:/app/.pnpm-store
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+
+  postgres:
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  redis:
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+  rabbitmq:
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_UI_PORT:-15672}:15672"
+
+  adminer:
+    image: adminer:lastest
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DESIGN: dracula
+    ports:
+      - "${ADMINER_PORT:-8081}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    restart: unless-stopped
+    ports:
+      - "${MAILHOG_UI_PORT:-8025}:8025"
+    networks: [backend]
+
+volumes:
+  go-mod-cache:
+  go-build-cache:
+  api-tmp:
+  worker-tmp:
+  frontend-node-modules:
+  frontend-next:
+  frontend-pnpm-store:
