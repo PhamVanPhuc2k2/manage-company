@@ -1,0 +1,1 @@
+DROP FUNCTION IF EXISTS seed_company_defaults(UUID);
