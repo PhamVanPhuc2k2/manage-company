@@ -4,19 +4,21 @@ go 1.27
 
 require (
 	github.com/go-chi/chi/v5 v5.5.0
+	github.com/go-chi/cors v1.2.1
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/rabbitmq/amqp091-go v1.16.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/viper v1.19.0
+	golang.org/x/crypto v0.57.0
 )
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
-	github.com/go-chi/cors v1.2.1 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
